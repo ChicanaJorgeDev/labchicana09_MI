@@ -23,7 +23,7 @@ jobs:
             const issueNumber = process.env.issue_number;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const projectTitle = "Gestión de Issues"; // <-- nombre exacto del proyecto
+            const projectTitle = "Desarrollo App Nutricional (Chicana)"; // <-- nombre exacto del proyecto
             const desiredStatus = "In Progress";      // <-- estado al que se moverá
 
             // 🔍 1. Buscar el proyecto y sus campos
