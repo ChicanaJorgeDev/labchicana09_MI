@@ -11,10 +11,6 @@ jobs:
       - name: Extract referenced issue number
         id: extract
         run: |
-          # Extrae el número de issue referenciado en el PR (refs #N o related to #N)
-          echo "PR_BODY<<EOF" >> $GITHUB_ENV
-          echo "${{ github.event.pull_request.body }}" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
           ISSUE=$(echo "${{ github.event.pull_request.body }}" | grep -oE '#[0-9]+' | head -n1 | tr -d '#')
           echo "issue_number=$ISSUE" >> $GITHUB_ENV
 
@@ -25,49 +21,99 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issueNumber = process.env.issue_number;
-            const projectNumber = 1; // cambia por tu número de proyecto
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const projectTitle = "Gestión de Issues"; // <-- nombre exacto del proyecto
+            const desiredStatus = "In Progress";      // <-- estado al que se moverá
 
-            // Busca el proyecto del repo
-            const { data: projects } = await github.graphql(`
+            // 🔍 1. Buscar el proyecto y sus campos
+            const queryProject = `
               query($owner: String!, $repo: String!) {
                 repository(owner: $owner, name: $repo) {
-                  projectsV2(first: 10) {
+                  projectsV2(first: 20) {
                     nodes {
                       id
                       title
+                      fields(first: 20) {
+                        nodes {
+                          id
+                          name
+                          dataType
+                          ... on ProjectV2SingleSelectField {
+                            options {
+                              id
+                              name
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
               }
-            `, { owner, repo });
+            `;
+            const result = await github.graphql(queryProject, { owner, repo });
 
-            const project = projects.repository.projectsV2.nodes.find(p => p.title === "Gestión de Issues"); // <-- nombre exacto de tu proyecto
+            const project = result.repository.projectsV2.nodes.find(p => p.title === projectTitle);
             if (!project) {
-              core.warning("No se encontró el proyecto");
+              core.warning("⚠️ No se encontró el proyecto con el nombre indicado.");
               return;
             }
 
-            // Agregar el issue si no está en el proyecto
+            // 🧩 2. Buscar el campo de estado
+            const statusField = project.fields.nodes.find(f => f.name === "Status" || f.name === "Estado");
+            if (!statusField) {
+              core.warning("⚠️ No se encontró el campo de estado (Status/Estado).");
+              return;
+            }
+
+            // 🔁 3. Buscar la opción “In Progress”
+            const inProgressOption = statusField.options.find(o => o.name === desiredStatus);
+            if (!inProgressOption) {
+              core.warning(`⚠️ No se encontró la opción '${desiredStatus}' en el campo Status.`);
+              return;
+            }
+
+            // 📦 4. Obtener información del issue
             const { data: issue } = await github.rest.issues.get({
               owner,
               repo,
               issue_number: issueNumber
             });
 
-            await github.graphql(`
+            // ➕ 5. Agregar issue al proyecto (si no está)
+            const addItemMutation = `
               mutation($projectId: ID!, $contentId: ID!) {
                 addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
-                  item {
-                    id
-                  }
+                  item { id }
                 }
               }
-            `, {
+            `;
+            const added = await github.graphql(addItemMutation, {
               projectId: project.id,
               contentId: issue.node_id
             });
 
-            // Cambiar el estado a “In Progress”
-            console.log(`✅ Issue #${issueNumber} movido a In Progress.`);
+            const itemId = added.addProjectV2ItemById.item.id;
+
+            // 🔄 6. Actualizar el estado del issue a “In Progress”
+            const updateMutation = `
+              mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId,
+                  itemId: $itemId,
+                  fieldId: $fieldId,
+                  value: { singleSelectOptionId: $optionId }
+                }) {
+                  projectV2Item { id }
+                }
+              }
+            `;
+            await github.graphql(updateMutation, {
+              projectId: project.id,
+              itemId,
+              fieldId: statusField.id,
+              optionId: inProgressOption.id
+            });
+
+            console.log(`✅ Issue #${issueNumber} movido a '${desiredStatus}' en el proyecto '${projectTitle}'.`);
