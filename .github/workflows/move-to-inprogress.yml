@@ -1,5 +1,4 @@
 name: Move issue to In Progress when PR references it
-
 on:
   pull_request:
     types: [opened, reopened, synchronize, closed]
