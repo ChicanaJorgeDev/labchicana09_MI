@@ -1,4 +1,4 @@
-name: Move issue to In Progress when PR references it
+name: Move Issue in Project when PR references it
 
 on:
   pull_request:
@@ -11,7 +11,7 @@ permissions:
   projects: write
 
 jobs:
-  move_issue_in_progress:
+  move_issue_status:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,9 +19,11 @@ jobs:
         id: extract
         run: |
           ISSUE=$(echo "${{ github.event.pull_request.body }}" | grep -oE '#[0-9]+' | head -n1 | tr -d '#')
-          echo "issue_number=$ISSUE" >> $GITHUB_ENV
+          if [ -n "$ISSUE" ]; then
+            echo "issue_number=$ISSUE" >> $GITHUB_ENV
+          fi
 
-      - name: Move referenced issue to In Progress (User Project)
+      - name: Move issue in user project
         if: env.issue_number != ''
         uses: actions/github-script@v7
         with:
@@ -31,10 +33,16 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const projectName = "Desarrollo App Nutricional (Chicana)";
-            const desiredStatus = "In Progress";
+            
+            // Detecta estado deseado
+            const desiredStatus = context.payload.action === "closed"
+              ? "Done"
+              : "In Progress";
 
-            // 🔍 1️⃣ Buscar el proyecto en los proyectos del usuario
-            const query = `
+            console.log(`➡️ PR ${context.payload.action} → moviendo issue #${issueNumber} a '${desiredStatus}'`);
+
+            // 1️⃣ Buscar proyecto de usuario
+            const result = await github.graphql(`
               query($login: String!) {
                 user(login: $login) {
                   projectsV2(first: 20) {
@@ -53,50 +61,47 @@ jobs:
                     }
                   }
                 }
-              }
-            `;
-            const result = await github.graphql(query, { login: owner });
-            const projects = result.user.projectsV2.nodes;
-            const project = projects.find(p => p.title === projectName);
+              }`,
+              { login: owner }
+            );
 
+            const project = result.user.projectsV2.nodes.find(p => p.title === projectName);
             if (!project) {
-              core.warning(`⚠️ No se encontró el proyecto "${projectName}" en el usuario ${owner}`);
+              core.setFailed(`❌ No se encontró el proyecto '${projectName}'`);
               return;
             }
 
-            // 🧩 2️⃣ Buscar el campo Status y la opción In Progress
+            // 2️⃣ Buscar campo Status
             const statusField = project.fields.nodes.find(f => f.name === "Status");
             if (!statusField) {
-              core.warning("⚠️ No se encontró el campo 'Status'");
+              core.setFailed("❌ No se encontró el campo 'Status'");
               return;
             }
 
-            const inProgressOption = statusField.options.find(o => o.name === desiredStatus);
-            if (!inProgressOption) {
-              core.warning(`⚠️ No se encontró la opción '${desiredStatus}'`);
+            // 3️⃣ Buscar la opción deseada
+            const statusOption = statusField.options.find(o => o.name === desiredStatus);
+            if (!statusOption) {
+              core.setFailed(`❌ No existe la opción '${desiredStatus}'`);
               return;
             }
 
-            // 📦 3️⃣ Obtener la issue
+            // 4️⃣ Obtener issue y agregar al proyecto
             const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: issueNumber });
             const issueNodeId = issue.node_id;
 
-            // ➕ 4️⃣ Agregar la issue al proyecto si no está
-            const addMutation = `
+            const addResult = await github.graphql(`
               mutation($projectId: ID!, $contentId: ID!) {
                 addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
                   item { id }
                 }
-              }
-            `;
-            const addResult = await github.graphql(addMutation, {
-              projectId: project.id,
-              contentId: issueNodeId
-            });
+              }`,
+              { projectId: project.id, contentId: issueNodeId }
+            );
+
             const itemId = addResult.addProjectV2ItemById.item.id;
 
-            // 🔄 5️⃣ Actualizar el campo Status → In Progress
-            const updateMutation = `
+            // 5️⃣ Cambiar estado
+            await github.graphql(`
               mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
                 updateProjectV2ItemFieldValue(input: {
                   projectId: $projectId,
@@ -106,13 +111,13 @@ jobs:
                 }) {
                   projectV2Item { id }
                 }
+              }`,
+              {
+                projectId: project.id,
+                itemId,
+                fieldId: statusField.id,
+                optionId: statusOption.id
               }
-            `;
-            await github.graphql(updateMutation, {
-              projectId: project.id,
-              itemId,
-              fieldId: statusField.id,
-              optionId: inProgressOption.id
-            });
+            );
 
-            console.log(`✅ Issue #${issueNumber} movido a '${desiredStatus}' en el proyecto '${projectName}'.`);
+            console.log(`✅ Issue #${issueNumber} movido a '${desiredStatus}' en '${projectName}'`);
