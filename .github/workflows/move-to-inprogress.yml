@@ -4,6 +4,12 @@ on:
   pull_request:
     types: [opened, reopened, synchronize, closed]
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  projects: write
+
 jobs:
   move_issue_in_progress:
     runs-on: ubuntu-latest
@@ -15,7 +21,7 @@ jobs:
           ISSUE=$(echo "${{ github.event.pull_request.body }}" | grep -oE '#[0-9]+' | head -n1 | tr -d '#')
           echo "issue_number=$ISSUE" >> $GITHUB_ENV
 
-      - name: Move referenced issue to In Progress
+      - name: Move referenced issue to In Progress (User Project)
         if: env.issue_number != ''
         uses: actions/github-script@v7
         with:
@@ -24,13 +30,14 @@ jobs:
             const issueNumber = process.env.issue_number;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const projectName = "Desarrollo App Nutricional (Chicana)"; // cambia si tu proyecto tiene otro título exacto
+            const projectName = "Desarrollo App Nutricional (Chicana)";
+            const desiredStatus = "In Progress";
 
-            // 1️⃣ Buscar el proyecto en el repositorio
+            // 🔍 1️⃣ Buscar el proyecto en los proyectos del usuario
             const query = `
-              query($owner: String!, $repo: String!) {
-                repository(owner: $owner, name: $repo) {
-                  projectsV2(first: 10) {
+              query($login: String!) {
+                user(login: $login) {
+                  projectsV2(first: 20) {
                     nodes {
                       id
                       title
@@ -48,34 +55,33 @@ jobs:
                 }
               }
             `;
-
-            const result = await github.graphql(query, { owner, repo });
-            const projects = result.repository.projectsV2.nodes;
+            const result = await github.graphql(query, { login: owner });
+            const projects = result.user.projectsV2.nodes;
             const project = projects.find(p => p.title === projectName);
 
             if (!project) {
-              core.warning(`⚠️ No se encontró el proyecto "${projectName}"`);
+              core.warning(`⚠️ No se encontró el proyecto "${projectName}" en el usuario ${owner}`);
               return;
             }
 
-            // 2️⃣ Buscar campo Status y opción In Progress
+            // 🧩 2️⃣ Buscar el campo Status y la opción In Progress
             const statusField = project.fields.nodes.find(f => f.name === "Status");
             if (!statusField) {
               core.warning("⚠️ No se encontró el campo 'Status'");
               return;
             }
 
-            const inProgressOption = statusField.options.find(o => o.name === "In Progress");
+            const inProgressOption = statusField.options.find(o => o.name === desiredStatus);
             if (!inProgressOption) {
-              core.warning("⚠️ No se encontró la opción 'In Progress'");
+              core.warning(`⚠️ No se encontró la opción '${desiredStatus}'`);
               return;
             }
 
-            // 3️⃣ Obtener la issue
+            // 📦 3️⃣ Obtener la issue
             const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: issueNumber });
             const issueNodeId = issue.node_id;
 
-            // 4️⃣ Agregar al proyecto (si aún no está)
+            // ➕ 4️⃣ Agregar la issue al proyecto si no está
             const addMutation = `
               mutation($projectId: ID!, $contentId: ID!) {
                 addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
@@ -89,7 +95,7 @@ jobs:
             });
             const itemId = addResult.addProjectV2ItemById.item.id;
 
-            // 5️⃣ Actualizar Status → In Progress
+            // 🔄 5️⃣ Actualizar el campo Status → In Progress
             const updateMutation = `
               mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
                 updateProjectV2ItemFieldValue(input: {
@@ -109,4 +115,4 @@ jobs:
               optionId: inProgressOption.id
             });
 
-            console.log(`✅ Issue #${issueNumber} movido a In Progress.`);
+            console.log(`✅ Issue #${issueNumber} movido a '${desiredStatus}' en el proyecto '${projectName}'.`);
